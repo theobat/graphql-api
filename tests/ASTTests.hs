@@ -211,3 +211,39 @@ tests = testSpec "AST" $ do
                             ]))
                      ]
       parsed `shouldBe` expected
+                          -- isHousetrained(otherHouses: [{location: { lon: 12.43, lat: -53.211 }}])                        
+
+    it "parses anonymous query with input object value" $ do
+        let query = [r|
+                      query {
+                        dog {
+                          isHousetrained(otherHouses: { lon: 12.43, lat: -53.211 })                        
+                        }
+                      }
+                      |]
+        let Right parsed = parseOnly Parser.queryDocument query
+        let expected = AST.QueryDocument
+                       [ AST.DefinitionOperation
+                           (AST.Query
+                             (AST.Node Nothing
+                              [] []
+                              [ AST.SelectionField
+                                  (AST.Field Nothing dog [] []
+                                   [ AST.SelectionField
+                                       (AST.Field Nothing "isHousetrained"
+                                        [ AST.Argument "otherHouses"
+                                            (AST.ValueObject (
+                                              AST.ObjectValue [
+                                                AST.ObjectField ("lon") (AST.ValueFloat 12.43),
+                                                AST.ObjectField ("lat") (AST.ValueFloat (-53.211))
+                                              ]
+                                            ))
+                                        ] [] [])
+                                   ])
+                              ]))
+                       ]
+        parsed `shouldBe` expected
+
+
+
+      
