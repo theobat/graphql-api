@@ -40,10 +40,12 @@ module GraphQL.Internal.Validation
   , validate
   , getErrors
   -- * Operating on validated documents
-  , Operation
+  , Operation(..)
+  , Operations
   , getSelectionSet
   -- * Executing validated documents
   , VariableDefinition(..)
+  , VariableDefinitions
   , VariableValue
   , Variable
   , AST.GType(..)
@@ -64,6 +66,7 @@ import Protolude hiding ((<>), throwE)
 
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import qualified Data.List as List
 import qualified Data.Map as Map
 import Data.Semigroup ((<>))
 import qualified Data.Set as Set
@@ -121,6 +124,17 @@ instance Traversable Operation where
 getSelectionSet :: Operation value -> SelectionSetByType value
 getSelectionSet (Query _ _ ss) = ss
 getSelectionSet (Mutation _ _ ss) = ss
+
+-- | Get the variableDefinitions for an operation.
+getVariableDefinitions :: Operation value -> VariableDefinitions
+getVariableDefinitions (Query vd _ _) = vd
+getVariableDefinitions (Mutation vd _ _) = vd
+
+-- | Get the variableDefinitions for an operation.
+-- The assumption here is that variable names are unique amongst all the operations ... to be confirmed by the spec
+getAllVariableDefinitions :: QueryDocument value -> VariableDefinitions
+getAllVariableDefinitions (LoneAnonymousOperation op) = getVariableDefinitions op
+getAllVariableDefinitions (MultipleOperations ops) = foldr (Map.union . getVariableDefinitions) Map.empty (Map.elems ops)
 
 -- | Type alias for 'Query' and 'Mutation' constructors of 'Operation'.
 type OperationType value = VariableDefinitions -> Directives value -> SelectionSetByType value -> Operation value
