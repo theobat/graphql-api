@@ -33,6 +33,7 @@ import GraphQL.Internal.Execution
   , ExecutionError
   , substituteVariables
   )
+import qualified Data.Aeson.Types as JSON
 import qualified GraphQL.Internal.Execution as Execution
 import qualified GraphQL.Internal.Syntax.AST as AST
 import qualified GraphQL.Internal.Syntax.Parser as Parser
@@ -135,9 +136,30 @@ interpretAnonymousQuery
   -> m Response -- ^ The result of running the query.
 interpretAnonymousQuery handler query = interpretQuery @api @m handler query Nothing mempty
 
+-- | Interpet a GraphQL query with a JSON map of variables.
+--
+-- Compiles then executes a GraphQL query.
+interpretRequest
+  :: forall api m. (Applicative m, HasResolver m api, HasObjectDefinition api)
+  => Handler m api -- ^ Handler for the query. This links the query to the code you've written to handle it.
+  -> (Text JSON.Object) -- ^ The text of a query document, and a JSON object of variables. Will be parsed and then executed.
+  -> Maybe Name -- ^ An optional name for the operation within document to run. If 'Nothing', execute the only operation in the document. If @Just "something"@, execute the query or mutation named @"something"@.
+  -> VariableValues -- ^ Values for variables defined in the query document. A map of 'Variable' to 'Value'.
+  -> m Response -- ^ The outcome of running the query.
+  interpretRequest handler query name variables =
+  case makeSchema @api >>= flip compileQuery query of
+    Left err -> pure (PreExecutionFailure (toError err :| []))
+    Right document -> executeQuery @api @m handler document name variables
+
 -- | Turn some text into a valid query document.
 compileQuery :: Schema -> Text -> Either QueryError (QueryDocument VariableValue)
 compileQuery schema query = do
+  parsed <- first ParseError (parseQuery query)
+  first ValidationError (validate schema parsed)
+
+  -- | Turn some text into a valid query document.
+compileQueryWithVariables :: Schema -> Text -> Either QueryError (QueryDocument VariableValue)
+compileQueryWithVariables schema query = do
   parsed <- first ParseError (parseQuery query)
   first ValidationError (validate schema parsed)
 
