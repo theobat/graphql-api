@@ -1,1 +1,9 @@
+# stack
 .stack-work
+stack.yaml # convenience 
+
+# editors 
+.vscode
+
+
+
