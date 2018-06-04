@@ -43,6 +43,7 @@ module GraphQL.Internal.Validation
   , Operation(..)
   , Operations
   , getSelectionSet
+  , getAllVariableDefinitions
   -- * Executing validated documents
   , VariableDefinition(..)
   , VariableDefinitions
