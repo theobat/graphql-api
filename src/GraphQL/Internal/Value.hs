@@ -14,6 +14,7 @@ module GraphQL.Internal.Value
   ( Value
   , Value'(..)
   , ConstScalar
+  , ConstScalar(..)
   , UnresolvedVariableValue
   , pattern ValueInt
   , pattern ValueFloat
