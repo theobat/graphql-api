@@ -32,11 +32,13 @@ import GraphQL.Internal.Schema
   ( AnnotatedType (TypeNonNull)
   )
 import GraphQL.Internal.Validation
-  ( Operation
+  ( Operation(..)
+  , Operations
   , QueryDocument(..)
   , VariableDefinition(..)
   , VariableValue
   , Variable
+  , VariableDefinitions
   )
 
 -- | Get an operation from a GraphQL document
@@ -109,3 +111,22 @@ instance GraphQLError ExecutionError where
 -- GraphQL allows the values of variables to be specified, but doesn't provide
 -- a way for doing so in the language.
 type VariableValues = Map Variable Value
+
+-- | Get the variable definitions from a QueryDocument
+-- | 
+-- | If there are 'MultipleOperations' an operationName has to be provided to disambiguate 
+-- | the 'VariableDefinitions' to chose. This is important because different queries may have 
+-- | the same variable names.
+-- | 
+-- | see <http://facebook.github.io/graphql/June2018/#example-6f6b9> and
+-- | <https://graphql.org/learn/serving-over-http/#post-request>
+getDocumentVariableDefinitions :: QueryDocument VariableValue -> Maybe Name -> Either ExecutionError VariableDefinitions
+getDocumentVariableDefinitions document operationName = case document of 
+  LoneAnonymousOperation operation -> Right (getOperationVariableDefinitions operation)
+  MultipleOperations operations -> getOperationVariableDefinitions <$> getOperation document operationName
+
+-- | Get the 'VariableDefinitions' from a 'Query' | 'Mutation'.
+getOperationVariableDefinitions :: Operation a -> VariableDefinitions
+getOperationVariableDefinitions operation = case operation of
+  Query    variableDefinitions _ _ -> variableDefinitions
+  Mutation variableDefinitions _ _ -> variableDefinitions

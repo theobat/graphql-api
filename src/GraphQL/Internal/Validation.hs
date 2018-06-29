@@ -40,12 +40,14 @@ module GraphQL.Internal.Validation
   , validate
   , getErrors
   -- * Operating on validated documents
-  , Operation
+  , Operation(..)
+  , Operations
   , getSelectionSet
   -- * Executing validated documents
   , VariableDefinition(..)
   , VariableValue
   , Variable
+  , VariableDefinitions
   , AST.GType(..)
   -- * Resolving queries
   , SelectionSetByType
