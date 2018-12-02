@@ -37,6 +37,8 @@ library:
   source-dirs: src
   dependencies:
     - aeson
+    - unordered-containers
+    - vector
     - containers
     - ghc-prim
     - scientific

@@ -14,6 +14,7 @@ module GraphQL.Internal.Execution
   , formatError
   , getOperation
   , substituteVariables
+  , getDocumentVariableDefinitions
   ) where
 
 import Protolude
@@ -33,12 +34,13 @@ import GraphQL.Internal.Schema
   )
 import GraphQL.Internal.Validation
   ( Operation(..)
-  , Operations
   , QueryDocument(..)
   , VariableDefinition(..)
   , VariableValue
   , Variable
   , VariableDefinitions
+  , lookupVariableDefinitionFromJSON
+  , resolveJSONVariable
   )
 
 -- | Get an operation from a GraphQL document

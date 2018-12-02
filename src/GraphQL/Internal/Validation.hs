@@ -43,6 +43,9 @@ module GraphQL.Internal.Validation
   , Operation(..)
   , Operations
   , getSelectionSet
+  , getVariable
+  , getVariableValuesFromJSON
+  , lookupVariableDefinitionFromJSON
   -- * Executing validated documents
   , VariableDefinition(..)
   , VariableValue
@@ -58,6 +61,7 @@ module GraphQL.Internal.Validation
   , getSubSelectionSet
   , ResponseKey
   , getResponseKey
+  , resolveJSONVariable
   -- * Exported for testing
   , findDuplicates
   , formatErrors
@@ -65,12 +69,15 @@ module GraphQL.Internal.Validation
 
 import Protolude hiding ((<>), throwE)
 
+import qualified Data.HashMap.Strict as HashMap
+import qualified Data.Vector as Vector
+import qualified Data.Aeson as Aeson
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map as Map
 import Data.Semigroup ((<>))
 import qualified Data.Set as Set
-import GraphQL.Internal.Name (HasName(..), Name)
+import GraphQL.Internal.Name (HasName(..), Name, makeName)
 import qualified GraphQL.Internal.Syntax.AST as AST
 -- Directly import things from the AST that do not need validation, so that
 -- @AST.Foo@ in a type signature implies that something hasn't been validated.
@@ -85,15 +92,25 @@ import GraphQL.Internal.Schema
   , doesFragmentTypeApply
   , lookupType
   , AnnotatedType(..)
+  , ListType(..)
+  , NonNullType(..)
+  , InputTypeDefinition (..)
+  , InputObjectTypeDefinition (..)
+  , InputObjectFieldDefinition (..)
+  , Builtin (..)
   , InputType (BuiltinInputType, DefinedInputType) 
   , AnnotatedType
   , getInputTypeDefinition
   , builtinFromName
   , astAnnotationToSchemaAnnotation
+  , valueFromJSONAndBuiltin
+  , valueFromEnumType
   )
 import GraphQL.Value
   ( Value
-  , Value'
+  , Value' (..)
+  , List' (..)
+  , Object' (..)
   , ConstScalar
   , UnresolvedVariableValue
   , astToVariableValue
@@ -644,6 +661,10 @@ type VariableDefinitions = Map Variable VariableDefinition
 getDefinedVariables :: VariableDefinitions -> Set Variable
 getDefinedVariables = Map.keysSet
 
+-- | Lookup a 'VariableDefinition' from a 'Variable' 'Name' 
+getVariable :: VariableDefinitions -> Name -> Maybe VariableDefinition
+getVariable definitions name = Map.lookup (AST.Variable name) definitions
+
 -- | A GraphQL value which might contain some defined variables.
 type VariableValue = Value' (Either VariableDefinition ConstScalar)
 
@@ -817,6 +838,8 @@ data ValidationError
   -- | A variable was defined with a non input type.
   -- <http://facebook.github.io/graphql/June2018/#sec-Variables-Are-Input-Types>
   | VariableTypeIsNotInputType Variable Name
+  -- | A variable has an incorrect provided value
+  | VariableValueTypeMismatch Aeson.Value 
   deriving (Eq, Show)
 
 instance GraphQLError ValidationError where
@@ -841,6 +864,7 @@ instance GraphQLError ValidationError where
   formatError (TypeConditionNotFound name) = "Type condition " <> show name <> " not found in schema."
   formatError (VariableTypeNotFound var name) = "Type named " <> show name <> " for variable " <> show var <> " is not in the schema."
   formatError (VariableTypeIsNotInputType var name) = "Type named " <> show name <> " for variable " <> show var <> " is not an input type."
+  formatError (VariableValueTypeMismatch jsonValue) = "Error at " <> show jsonValue <> " type mismatch."
 
 type ValidationErrors = NonEmpty ValidationError
 
@@ -928,3 +952,101 @@ instance Applicative (Validator e) where
   Validator (Left e) <*> _ = Validator (Left e)
   Validator _ <*> (Validator (Left e)) = Validator (Left e)
   Validator (Right f) <*> Validator (Right x) = Validator (Right (f x))
+
+-- * JSON variables validation
+
+
+-- | Infer variables from a json object with definition context
+-- (k -> v -> a -> a) -> a -> HashMap k v -> a 
+getVariableValuesFromJSON :: VariableDefinitions -> Aeson.Object -> Either ValidationErrors (Map Variable Value)
+getVariableValuesFromJSON definitions jsonObject = case validatedInputValues of
+    Validator (Right variableValues) -> Right variableValues
+    Validator (Left errors) -> Left errors
+  where 
+    validatedInputValues = HashMap.foldrWithKey (getVariableValueFromJSON definitions) (pure Map.empty) jsonObject
+
+getVariableValueFromJSON :: VariableDefinitions -> Text -> Aeson.Value -> Validation (Map Variable Value) -> Validation (Map Variable Value)
+getVariableValueFromJSON definitions variableName variableValue values =
+  case lookupVariableDefinitionFromJSON variableName definitions of 
+    Nothing -> values
+    Just variableDefinition -> iterateJSONVariableMap variableDefinition (resolveJSONVariable variableDefinition variableValue) values
+
+iterateJSONVariableMap :: VariableDefinition -> Validation Value -> Validation (Map Variable Value) -> Validation (Map Variable Value)
+iterateJSONVariableMap (VariableDefinition variable _ _) resolvedValue inputMap = (Map.insert variable <$> resolvedValue) <*> inputMap
+
+-- | Find a variable definition given a raw name as 'Text'.
+-- 
+-- Any failure (even if the name is not a valid graphql 'Name') is considered as "Not Found", id est, 'Nothing',
+-- because if it's in the schema it has to be a valid name anyway.
+lookupVariableDefinitionFromJSON :: Text -> VariableDefinitions -> Maybe VariableDefinition
+lookupVariableDefinitionFromJSON rawVariableName definitions = case variableName of 
+  Left _ -> Nothing
+  Right name -> Map.lookup (AST.Variable name) definitions
+  where variableName = makeName rawVariableName
+
+-- | Validate and convert a JSON value ('Aeson.Value') to a GraphQL 'Value' with its expected VariableDefinition.
+resolveJSONVariable :: VariableDefinition -> Aeson.Value -> Validation Value
+resolveJSONVariable (VariableDefinition _ annotatedType _) = resolveAnnotatedJSONVariable annotatedType
+
+-- | Convert a JSON value ('Aeson.Value') to a GraphQL 'Value'.
+-- | 
+resolveAnnotatedJSONVariable :: AnnotatedType InputType -> Aeson.Value -> Validation Value
+resolveAnnotatedJSONVariable (TypeNonNull (NonNullTypeList (ListType inputType))) (Aeson.Array vectorValue) = resolveJSONList inputType vectorValue
+resolveAnnotatedJSONVariable (TypeNonNull (NonNullTypeNamed inputType)) value = resolveInputValue inputType value
+resolveAnnotatedJSONVariable (TypeList (ListType inputType)) (Aeson.Array vectorValue) = resolveJSONList inputType vectorValue
+resolveAnnotatedJSONVariable (TypeNamed inputType) value = resolveInputValue inputType value
+resolveAnnotatedJSONVariable _ jsonValue = throwE (VariableValueTypeMismatch jsonValue)
+
+resolveJSONList :: AnnotatedType InputType -> Vector.Vector Aeson.Value -> Validation Value
+resolveJSONList inputType vectorValue = ValueList' . List' <$> validationVector
+  where 
+    validationVector = traverse identity (toList resolvedVector)
+    resolvedVector = resolveAnnotatedJSONVariable inputType <$> vectorValue
+
+-- Resolve a JSON object into a graphQL Object value
+--
+-- theobat: The fieldMap part of where should be a side product of the makeSchema method, 
+-- 'NonEmpty' as the object's fields container makes no sense from a reader's perspective.
+-- (resolveJSONObject "reads" the object's fields in a way)
+resolveJSONObject :: InputObjectTypeDefinition -> Aeson.Object -> Validation Value
+resolveJSONObject (InputObjectTypeDefinition _ fieldList) givenObject = objectValue
+  where
+    objectValue = ValueObject' . Object' <$> transformedMap
+    transformedMap = HashMap.foldrWithKey (resolveJSONObjectField fieldMap) (pure OrderedMap.empty) givenObject
+    fieldMap = Map.fromList $ NonEmpty.toList $ NonEmpty.map (\(InputObjectFieldDefinition name inputDef _) -> (name, inputDef)) fieldList
+    
+resolveJSONObjectField :: Map Name (AnnotatedType InputType)
+  -> Text
+  -> Aeson.Value
+  -> Validation (OrderedMap Name Value)
+  -> Validation (OrderedMap Name Value)
+resolveJSONObjectField typeReference key value inputMap = final
+    where
+      final = (merge <$> newSingleton) <*> inputMap
+      merge = OrderedMap.unionWith const
+      newSingleton = resolveJSONField typeReference key value
+
+resolveJSONField :: Map Name (AnnotatedType InputType) -> Text -> Aeson.Value -> Validation (OrderedMap Name Value)
+resolveJSONField typeReference key value = uncurry OrderedMap.singleton <$> nameAndType
+    where 
+      nameAndType = case rawName of 
+        Right name -> case Map.lookup name typeReference of
+          Just fieldType -> traverse identity (name, resolveAnnotatedJSONVariable fieldType value)
+          Nothing -> throwE (VariableValueTypeMismatch value)
+        Left _ -> throwE (VariableValueTypeMismatch value)
+      rawName = makeName key
+
+resolveInputValue :: InputType -> Aeson.Value -> Validation Value
+resolveInputValue (DefinedInputType (InputTypeDefinitionEnum inuptEnumDefinition)) jsonValue = case valueFromEnumType jsonValue inuptEnumDefinition of 
+  Just value -> pure value
+  Nothing -> throwE (VariableValueTypeMismatch jsonValue)
+resolveInputValue (DefinedInputType (InputTypeDefinitionObject inputObjectTypeDefinition)) (Aeson.Object object) = resolveJSONObject inputObjectTypeDefinition object
+resolveInputValue (BuiltinInputType builtin) jsonValue = resolveInputBuiltin builtin jsonValue
+resolveInputValue _ jsonValue = throwE (VariableValueTypeMismatch jsonValue)
+
+resolveInputBuiltin :: Builtin -> Aeson.Value -> Validation Value
+resolveInputBuiltin input jsonValue = case valueFromJSONAndBuiltin jsonValue input of
+  Just value -> pure value
+  Nothing -> throwE (VariableValueTypeMismatch jsonValue)
+
+ 

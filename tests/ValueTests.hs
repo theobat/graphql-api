@@ -61,7 +61,6 @@ tests = testSpec "Value" $ do
                                   ]
       astToVariableValue (AST.ValueObject input) `shouldBe` Nothing
 
-
 -- | All of the fields in an object should have unique names.
 prop_fieldsUnique :: Object -> Bool
 prop_fieldsUnique object =

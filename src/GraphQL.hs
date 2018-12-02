@@ -24,6 +24,9 @@ module GraphQL
 
 import Protolude
 
+import qualified Data.Aeson as Aeson
+import qualified Data.Map as Map
+import qualified Data.HashMap.Strict as HashMap
 import Data.Attoparsec.Text (parseOnly, endOfInput)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -32,6 +35,7 @@ import GraphQL.Internal.Execution
   ( VariableValues
   , ExecutionError
   , substituteVariables
+  , getDocumentVariableDefinitions
   )
 import qualified GraphQL.Internal.Execution as Execution
 import qualified GraphQL.Internal.Syntax.AST as AST
@@ -42,7 +46,14 @@ import GraphQL.Internal.Validation
   , ValidationErrors
   , validate
   , getSelectionSet
+  , getVariableValuesFromJSON
   , VariableValue
+  , VariableDefinitions
+  )
+import GraphQL.Internal.Request 
+  ( PostRequest (PostRequest)
+  , RawPostRequest (RawPostRequest)
+  , PostRequestError (..)
   )
 import GraphQL.Internal.Output
   ( GraphQLError(..)
@@ -52,7 +63,7 @@ import GraphQL.Internal.Output
 import GraphQL.Internal.Schema (Schema)
 import qualified GraphQL.Internal.Schema as Schema
 import GraphQL.Resolver (HasResolver(..), Result(..))
-import GraphQL.Value (Name, Value, pattern ValueObject)
+import GraphQL.Value (Name, Value, pattern ValueObject, makeName)
 
 -- | Errors that can happen while processing a query document.
 data QueryError
@@ -125,6 +136,16 @@ interpretQuery handler query name variables =
     Left err -> pure (PreExecutionFailure (toError err :| []))
     Right document -> executeQuery @api @m handler document name variables
 
+-- | Interpret a GraphQL query, given a packaged request.
+interpretPostRequest
+  :: forall api m
+   . (Applicative m, HasResolver m api, HasObjectDefinition api)
+  => Handler m api -- ^ Handler for the query. This links the query to the code you've written to handle it.
+  -> PostRequest -- ^ The query and its input values.
+  -> m Response -- ^ The outcome of running the query.
+interpretRequest handler (PostRequest query name variables) =
+  executeQuery @api @m handler query name variables
+
 -- | Interpret an anonymous GraphQL query.
 --
 -- Anonymous queries have no name and take no variables.
@@ -151,3 +172,55 @@ getOperation document name vars = first ExecutionError $ do
   op <- Execution.getOperation document name
   resolved <- substituteVariables op vars
   pure (getSelectionSet resolved)
+
+-- | Infer variables from a json object with definition context
+-- (k -> v -> a -> a) -> a -> HashMap k v -> a 
+getVariablesValues
+  :: VariableDefinitions
+  -> Aeson.Object
+  -> Either QueryError VariableValues
+getVariablesValues definitions variables = case getVariableValuesFromJSON definitions variables of
+  Left validationErrors -> Left (ValidationError validationErrors)
+  Right variableValues -> Right variableValues
+
+-- compilePostRequest :: Aeson.Object ->  
+-- | Get a request object from a JSON AST and a graphQL 'Schema'.
+-- |
+-- getRequest :: Schema -> Aeson.Object -> Either QueryError PostRequest
+-- getRequest schema value = Left (JSONRequestError (JSONRequestShapeError ""))
+--   where 
+    -- variableDefinitions = case queryDocument of 
+    --   Left e -> Left e
+    --   Right (queryDoc) -> case getDocumentVariableDefinitions queryDoc operationName of
+    --     Left executionError -> Left (ExecutionError executionError)
+    -- operationName = case makeName operationTextName of
+    --   Left e -> Left NoQueryDocumentReceived
+    --   Just (Aeson.String queryDocument) -> compileQuery schema queryDocument
+    
+    -- variableValues = case variables of
+    --   Nothing -> Right Map.empty
+    --   Just _ -> Right Map.empty
+      -- Just (Aeson.Object jsonValue) -> getVariablesValues schema jsonValue 
+    -- variableDefinitionsOrError = case operationName of
+    --   Left e -> Left e 
+    --   Right operationName -> Right (getDocumentVariableDefinitions schema jsonValue)
+    -- variableDefinitions = getDocumentVariableDefinitions <$> compiledQuery 
+    -- variableDefinitions = getDocumentVariableDefinitions <$> query operationName
+    -- testQuery = either (<*>) (compileQuery schema) query
+    -- query = case HashMap.lookup "query" value of 
+    --   Nothing -> Left $ shouldBeAStringError "query"
+    --   Just value -> Left $ shouldBeAStringError "query"
+    --   Just (Aeson.String rawQueryDocument) -> Right rawQueryDocument 
+    --   Just (Aeson.String rawQueryDocument) -> case compileQuery schema rawQueryDocument of 
+    --     Left qe -> Left qe
+    --     Right query -> Right query
+    -- operationName = case HashMap.lookup "operationName" value of 
+    --   Nothing -> Right Nothing
+    --   Just (Aeson.String opName) -> case makeName opName of
+    --     Left _ -> Left (JSONRequestError $ JSONNameError $ "The operationName " <> opName <> " is not a valid graphql name.")
+    --     Right name -> Right (Just name)
+    --   Just value -> Left $ shouldBeAStringError "operationName" 
+    -- variables = HashMap.lookup "variables" value
+    -- shouldBeAStringError fieldName = JSONRequestError 
+    --   (JSONRequestShapeError $ "The query " <> fieldName <> " in request should be a string field.")
+

@@ -483,3 +483,16 @@ tests = testSpec "End-to-end tests" $ do
                 ]
               ]
         toJSON (toValue response) `shouldBe` expected
+      it "Resolve json variables into proper values" $ do
+        response <- executeQuery  @QueryRoot (rootHandler mortgage) annotatedQuery Nothing mempty
+        let expected =
+              object
+              [ "data" .= Null
+              , "errors" .=
+                [
+                  object
+                  [ "message" .= ("Execution error: MissingValue (Variable (Name {unName = \"whichCommand\"}))" :: Text)
+                  ]
+                ]
+              ]
+        toJSON (toValue response) `shouldBe` expected

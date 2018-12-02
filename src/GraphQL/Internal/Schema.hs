@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_HADDOCK not-home #-}
 
 -- | Description: Fully realized GraphQL schema type system at the Haskell value level
@@ -42,14 +43,27 @@ module GraphQL.Internal.Schema
   , makeSchema
   , emptySchema
   , lookupType
+  , valueFromJSONAndBuiltin
+  , valueFromEnumType
   ) where
 
 import Protolude
 
 import qualified Data.Map as Map
+import qualified Data.Scientific as Scientific
 import qualified GraphQL.Internal.Syntax.AST as AST
-import GraphQL.Value (Value)
-import GraphQL.Internal.Name (HasName(..), Name)
+import GraphQL.Value 
+  ( Value
+  , String(..)
+  , pattern ValueBoolean
+  , pattern ValueString
+  , pattern ValueInt
+  , pattern ValueFloat
+  , pattern ValueNull
+  , pattern ValueEnum
+  )
+import GraphQL.Internal.Name (HasName(..), Name, unName)
+import qualified Data.Aeson                    as Aeson
 
 -- | An entire GraphQL schema.
 --
@@ -366,3 +380,29 @@ astAnnotationToSchemaAnnotation gtype schemaTypeName =
     AST.TypeList (AST.ListType astTypeName) -> TypeList (ListType $ astAnnotationToSchemaAnnotation astTypeName schemaTypeName)
     AST.TypeNonNull (AST.NonNullTypeNamed _) -> TypeNonNull (NonNullTypeNamed schemaTypeName)
     AST.TypeNonNull (AST.NonNullTypeList (AST.ListType astTypeName)) -> TypeNonNull (NonNullTypeList (ListType (astAnnotationToSchemaAnnotation astTypeName schemaTypeName)))
+
+-- | Convert a JSON value into a 'ConstScalar'.
+--
+valueFromJSONAndBuiltin :: Aeson.Value -> Builtin -> Maybe Value
+valueFromJSONAndBuiltin (Aeson.Bool b) GBool = Just (ValueBoolean b)
+valueFromJSONAndBuiltin (Aeson.String t) GString = Just (ValueString (String t))
+valueFromJSONAndBuiltin (Aeson.Number n) GInt = ValueInt <$> Scientific.toBoundedInteger n
+valueFromJSONAndBuiltin (Aeson.Number x) GFloat = rightToMaybe (ValueFloat <$> Scientific.toBoundedRealFloat x)
+valueFromJSONAndBuiltin (Aeson.String t) GID = Just (ValueString (String t))
+valueFromJSONAndBuiltin Aeson.Null _ = Just ValueNull
+valueFromJSONAndBuiltin _ _ = Nothing
+
+-- | Convert a JSON value into a 'ConstScalar'.
+--
+valueFromEnumType :: Aeson.Value -> EnumTypeDefinition -> Maybe Value
+valueFromEnumType (Aeson.String enumValue) (EnumTypeDefinition _ enumList) = searchEnumValues enumValue enumList
+valueFromEnumType _ _ = Nothing
+
+-- | Iterate on a list of 'EnumValueDefinition' to find the one named by @value@.
+--
+searchEnumValues :: Text -> [EnumValueDefinition] -> Maybe Value
+searchEnumValues _ [] = Nothing
+searchEnumValues value (x : xs) =
+  if unName name == value then Just (ValueEnum name) else searchEnumValues value xs
+  where 
+    name = getName x
